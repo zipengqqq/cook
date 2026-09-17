@@ -35,16 +35,17 @@ python -c "import app.agent as a, json; print(json.dumps(a.recommend_dishes('我
 
 ## 架构
 
-三段链路，彼此独立、可分别调试：
+四段链路，彼此独立、可分别调试：
 
 ```
-POST /api/recommend
+POST /api/recommend  →  纯文本
    └─ main.py            并发编排（菜与菜之间用 asyncio.gather）
         ├─ app/agent.py      ① LLM：食材 → 菜名数组
-        └─ app/bilibili.py   ②③ 每个菜并发检索并选出一条视频
+        ├─ app/bilibili.py   ②③ 每个菜并发检索并选出一条视频
+        └─ app/summarize.py  ④ 渲染成文本（模型润色 + 模板兜底）
 ```
 
-`app/agent.py` 的 LLM 调用是同步阻塞的，`main.py` 里用 `asyncio.to_thread` 扔进线程池——**不要**直接 `await`，也不要改成同步路由，否则并发检索退化成串行。
+`app/agent.py` 和 `app/summarize.py` 的 LLM 调用都是同步阻塞的，`main.py` 里两处都用 `asyncio.to_thread` 扔进线程池——**不要**直接 `await`，也不要改成同步路由，否则并发检索退化成串行。
 
 ### 关键实现约束
 
@@ -60,7 +61,9 @@ POST /api/recommend
 
 **`WEIGHTS` 是唯一需要反复调参的地方**，别把权重散进逻辑里。三个维度量级悬殊（播放量常是投币的几十上百倍），必须先 `_log_norm` 取对数再归一化，不能直接相加。
 
-**接口契约在 `app/models.py`，改动要同步 README。** 单个菜搜不到视频返回 `video: null`，检索失败也不该让整个请求挂掉（`main.py` 里 `return_exceptions=True` + 逐个降级）。
+**接口只返回文本，不再返回 JSON。** 响应体是 `text/plain`，由 `app/summarize.py` 渲染。`app/models.py` 里的结构体只在模块之间传值用，不是对外契约。单个菜搜不到视频时文字里写「没找到合适的视频」，检索失败也不该让整个请求挂掉（`main.py` 里 `return_exceptions=True` + 逐个降级）。
+
+**`app/summarize.py` 的兜底链不能拆。** 数字和链接先由代码格式化成可读写法才交给模型，模型只负责把话说顺；产出后 `looks_intact()` 校验链接和菜名，缺一个就退回 `render_text()` 模板渲染。模型超时、返回空、乱写都会走兜底，`summarize()` 不会抛异常。改这一段时保持"模型润色只是锦上添花、模板永远能出正确结果"这个性质——数字和链接错一个是这套东西最严重的故障。
 
 ## 配置
 
@@ -74,7 +77,9 @@ DeepSeek 是 OpenAI 兼容接口，走 `langchain-openai` 的 `ChatOpenAI` 覆�
 
 **INFO 每次请求约 7 行**：模型请求、模型返回（含菜名和耗时）、每道菜选中的视频（含 score 与三个维度原始值）、请求完成汇总（含总耗时和几道菜有视频）。
 
-**DEBUG 用于调参**：多出模型原始输出、每个菜的搜索条数与过滤后条数、落选候选及其分数、buvid3 获取情况。调 `WEIGHTS` 时开这一档，落选候选那行能直接看出权重是否合理。
+**DEBUG 用于调参**：多出模型原始输出、每个菜的搜索条数与过滤后条数、落选候选及其分数、buvid3 获取情况、润色后的文本。调 `WEIGHTS` 时开这一档，落选候选那行能直接看出权重是否合理。
+
+**耗时只进日志，不进返回给用户的文本。** 这是明确要求，别往 `render_text()` 或润色提示词里加时间。
 
 ```bash
 LOG_LEVEL=DEBUG .venv/Scripts/python.exe main.py

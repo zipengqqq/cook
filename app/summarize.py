@@ -1,10 +1,13 @@
-"""第三步：把结果写成给人读的文本。
+"""第四步：把结果写成给人读的文本。
 
 结构化数据是给程序看的，人直接读 JSON 太费劲。这里渲染成一段能直接看的文字。
 
-润色交给模型，但**数字和链接不交给它"理解"**：先把播放量之类格式化成
-「63.1万」这种可读写法再喂给它，要求原样照抄，产出后再校验一遍链接和菜名
-有没有丢。任何一步不对就退回模板渲染——模板是纯代码拼的，数字一定准。
+输出只要三样：**菜名、推荐理由、视频链接**。播放量、点赞、投币这些数字不进输出，
+用户不关心，写在推荐里只是噪音；视频标题和 UP 主同理，也去掉了。
+
+润色交给模型，但**链接不交给它"理解"**：链接错一个字就打不开，所以要求原样照抄，
+产出后再校验一遍每个菜名和链接还在不在。任何一步不对就退回模板渲染——
+模板是纯代码拼的，链接一定对。
 """
 
 from __future__ import annotations
@@ -24,35 +27,24 @@ SYSTEM_PROMPT = """你把菜谱推荐结果整理成一段给人读的话。
 要求：
 1. 平实口语，像朋友推荐今晚吃什么。不要用 markdown 符号（** ## - 等一律不要）。
 2. 开头一句话总述，然后逐道菜写。
-3. 每道菜都要写全：菜名、推荐理由、视频标题、UP 主、播放/点赞/投币三个数字、链接。
-4. 数字、链接、UP 主名字必须与给定数据**一字不差地照抄**，不要改写、不要换算单位、
-   不要四舍五入、不要补全。
+3. 每道菜写全三样：菜名、推荐理由、链接。此外不要写别的——
+   不要提视频标题、UP 主，也不要提播放量、点赞数、投币数。
+4. 链接必须与给定数据**一字不差地照抄**，不要改写、不要补全、不要省略。
 5. 只输出这段文字本身，前后不要加任何说明。"""
 
 
-def format_count(n: int) -> str:
-    """按中文习惯写大数：631368 → 63.1万。"""
-    if n >= 100_000_000:
-        return f"{n / 100_000_000:.1f}亿"
-    if n >= 10_000:
-        return f"{n / 10_000:.1f}万"
-    return str(n)
-
-
 def _facts(dish: Dish) -> dict[str, str]:
-    """把一道菜摊平成待照抄的字段。数字在这里就已经是可读写法了。"""
-    v = dish.video
-    if v is None:
+    """把一道菜摊平成待照抄的字段。
+
+    只留菜名、理由、链接三样。数字不进输出，视频标题和 UP 主也没人看，
+    一起去掉——给模型的字段越少，它能写歪的地方就越少。
+    """
+    if dish.video is None:
         return {"菜名": dish.name, "推荐理由": dish.reason, "视频": "没找到合适的视频"}
     return {
         "菜名": dish.name,
         "推荐理由": dish.reason,
-        "视频标题": v.title,
-        "UP主": v.author,
-        "播放": format_count(v.play),
-        "点赞": format_count(v.like),
-        "投币": format_count(v.coin),
-        "链接": v.url,
+        "链接": dish.video.url,
     }
 
 
@@ -60,21 +52,14 @@ def render_text(query: str, dishes: list[Dish]) -> str:
     """模板渲染。既是默认输出，也是模型写崩时的兜底。"""
     lines = [f"关于「{query}」，推荐这 {len(dishes)} 道菜：", ""]
     for i, dish in enumerate(dishes, 1):
-        lines.append(f"{i}. {dish.name}")
+        head = f"{i}. {dish.name}"
         if dish.reason:
-            lines.append(f"   {dish.reason}")
+            head += f"：{dish.reason}"
+        lines.append(head)
         if dish.video is None:
             lines.append("   （没找到合适的视频）")
         else:
-            v = dish.video
-            lines.append("")
-            lines.append(f"   视频：{v.title}")
-            lines.append(f"   UP 主：{v.author}")
-            lines.append(
-                f"   播放 {format_count(v.play)} · 点赞 {format_count(v.like)}"
-                f" · 投币 {format_count(v.coin)}"
-            )
-            lines.append(f"   {v.url}")
+            lines.append(f"   链接：{dish.video.url}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -107,13 +92,13 @@ def summarize(query: str, dishes: list[Dish]) -> str:
     fallback = render_text(query, dishes)
 
     settings = get_settings()
-    if not settings.deepseek_api:
-        logger.warning("未配置 DEEPSEEK_API，跳过润色直接用模板")
+    if not settings.deepseek_key:
+        logger.warning("未配置 DEEPSEEK_KEY，跳过润色直接用模板")
         return fallback
 
     llm = ChatOpenAI(
         model=settings.deepseek_model,
-        api_key=settings.deepseek_api,
+        api_key=settings.deepseek_key,
         base_url=settings.deepseek_base_url,
         # 润色要的是稳定，不是发挥
         temperature=0.3,

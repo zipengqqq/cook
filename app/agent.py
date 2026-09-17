@@ -24,13 +24,15 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """你是家常菜推荐助手。用户会告诉你手头有什么食材、或想吃什么。
 
 要求：
-1. 推荐 {count} 道菜。优先用上用户已有的食材，缺一两样常见调料没关系。
+1. 推荐 {min_count} 到 {max_count} 道菜。具体几道由食材的实际情况决定：能撑起多少道
+   不同的菜就推多少道。宁可少推几道，也不要为了凑数硬编。
+   优先用上用户已有的食材，缺一两样常见调料没关系。
 2. 每道菜给三个字段：
    - name：菜名。必须是常见、标准的写法（例如「番茄炒蛋」而不是「西红柿鸡蛋小炒」），
      因为这个菜名会被直接拿去视频网站搜索。
    - reason：一句话推荐理由，30 字以内，说清楚为什么适合用户。
    - ingredients_used：用到的用户已有食材，字符串数组。
-3. 菜品之间要有区分度，不要推荐四道做法雷同的菜。
+3. 菜品之间要有区分度，不要推荐好几道做法雷同的菜。
 4. 只输出 JSON 数组，不要 markdown 代码块，不要任何解释文字。
 
 输出格式：
@@ -102,27 +104,36 @@ def _normalize(raw: list, count: int) -> list[dict]:
     return out
 
 
-def recommend_dishes(query: str, count: int | None = None) -> list[dict]:
-    """同步接口。调用方负责放进线程池，不要阻塞事件循环。"""
-    settings = get_settings()
-    if not settings.deepseek_api:
-        raise LLMError("未配置 DEEPSEEK_API，请检查 .env")
+def recommend_dishes(query: str, max_count: int | None = None) -> list[dict]:
+    """同步接口。调用方负责放进线程池，不要阻塞事件循环。
 
-    count = count or settings.dish_count
+    max_count 只是上限，用来兜住模型话多的情况；实际几道由模型按食材定。
+    """
+    settings = get_settings()
+    if not settings.deepseek_key:
+        raise LLMError("未配置 DEEPSEEK_KEY，请检查 .env")
+
+    count = max_count or settings.dish_max
     llm = ChatOpenAI(
         model=settings.deepseek_model,
-        api_key=settings.deepseek_api,
+        api_key=settings.deepseek_key,
         base_url=settings.deepseek_base_url,
         temperature=settings.deepseek_temperature,
         timeout=settings.request_timeout,
     )
 
-    logger.info("向模型请求 %d 道菜：%s", count, query)
+    logger.info(
+        "向模型请求 %d-%d 道菜：%s", settings.dish_min, count, query
+    )
     started = time.perf_counter()
     try:
         resp = llm.invoke(
             [
-                SystemMessage(content=SYSTEM_PROMPT.format(count=count)),
+                SystemMessage(
+                    content=SYSTEM_PROMPT.format(
+                        min_count=settings.dish_min, max_count=count
+                    )
+                ),
                 HumanMessage(content=query),
             ]
         )
@@ -144,6 +155,14 @@ def recommend_dishes(query: str, count: int | None = None) -> list[dict]:
     if not dishes:
         logger.error("模型输出解析后无可用菜名，原始内容：%s", content[:1500])
         raise LLMError("模型没有返回任何可用的菜名")
+    if len(dishes) < settings.dish_min:
+        # 不补菜——凑数凑出来的一定是烂菜。但得留一行，
+        # 否则「怎么又只有两道」会看起来像是菜数配置没生效
+        logger.warning(
+            "模型只给了 %d 道菜，少于期望的 %d 道（可能是食材确实撑不起更多）",
+            len(dishes),
+            settings.dish_min,
+        )
 
     logger.info(
         "模型返回 %d 道菜（耗时 %.1fs）：%s",

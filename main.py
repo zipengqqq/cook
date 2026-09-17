@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from app.agent import LLMError, recommend_dishes
-from app.bilibili import BilibiliClient
+from app.bilibili import BilibiliClient, rank_by_popularity
 from app.config import get_settings
 from app.models import Dish, RecommendRequest
 from app.summarize import summarize
@@ -54,7 +54,7 @@ async def recommend(req: RecommendRequest) -> PlainTextResponse:
     started = time.perf_counter()
 
     try:
-        dishes = await asyncio.to_thread(recommend_dishes, req.query, settings.dish_count)
+        dishes = await asyncio.to_thread(recommend_dishes, req.query, settings.dish_max)
     except LLMError as exc:
         logger.warning("推荐失败（模型环节）：%s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -78,6 +78,10 @@ async def recommend(req: RecommendRequest) -> PlainTextResponse:
             logger.warning("检索「%s」的视频失败：%s", dish["name"], video)
             video = None
         result.append(Dish(**dish, video=video))
+
+    # 菜的顺序也按数据来：视频热度高的排前面，没视频的垫底。
+    # 这里是跨菜重算一次，不能直接沿用每道菜内部那个分数（各家尺度不一样）。
+    result = rank_by_popularity(result)
 
     # 润色同样走线程池：它是同步阻塞的
     text = await asyncio.to_thread(summarize, req.query, result)

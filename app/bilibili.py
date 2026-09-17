@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from .models import VideoInfo
+from .models import Dish, VideoInfo
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,43 @@ VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
 # 投币和点赞是主动表态，比播放量更能反映视频质量；播放量作为热度权重最低。
 WEIGHTS = {"coin": 0.4, "like": 0.4, "play": 0.2}
 
+# 烹饪动词。中文菜名是「限定语 + 动词 + 主料」，一个菜名通常只带一个动词。
+COOK_VERBS = frozenset("蒸炒烧炖拌煮焖煎炸烤溜爆卤腌焗煨扒烩焯汆熬酱熏醉")
+# 菜名的收尾字。菜名几乎都以主料收尾，用来确认这一段确实是个菜名，
+# 而不是「焯水」「炒糖色」这种步骤描述。
+DISH_TAILS = frozenset(
+    "丝片块丁条汤菜面饭粥饼卷丸饺包羹煲锅肉鱼虾鸡鸭蛋骨豆腐瓜茄笋藕菇菌"
+    "米粉丝皮排翅爪肝肚肠舌尾头掌筋酥糕团"
+)
+# 一次教好几道菜的合集，标题里常见的词。人工看过的高置信信号，不在多而在准。
+COMPILATION_MARKERS = ("合集", "大全", "不重样", "今日食谱", "一周食谱", "每日食谱")
+
 
 class BilibiliError(RuntimeError):
     pass
+
+
+def looks_like_compilation(title: str) -> bool:
+    """标题像「一条视频教好几道菜」的合集吗？
+
+    这类视频点进去还得自己拖进度条找对应的菜，所以不要——这是明确的产品要求。
+
+    判据是数「带烹饪动词、且以主料字收尾」的片段：单道菜的标题最多出现一两个
+    （「番茄炒蛋的6种做法」是一个动词），并列好几道菜时每道菜各带各的动词。
+    「焯水」「炒糖色」这种罗列步骤的标题靠「以主料字收尾」这半条挡住。
+
+    这是启发式，不是解析。宁可漏掉几个合集，也别把正常的单菜视频误杀成
+    「没找到合适的视频」——那是更糟的失败。
+    """
+    if any(marker in title for marker in COMPILATION_MARKERS):
+        return True
+    segments = (s.strip() for s in re.split(r"[，,、；;｜|/＋+和与及]", title))
+    hits = sum(
+        1
+        for seg in segments
+        if seg and seg[-1] in DISH_TAILS and any(v in seg for v in COOK_VERBS)
+    )
+    return hits >= 3
 
 
 def _clean_title(raw: str) -> str:
@@ -134,6 +168,21 @@ class VideoCandidate:
         )
 
 
+def composite_scores(candidates: list) -> list[float]:
+    """按 WEIGHTS 加权算综合分，不修改候选本身。
+
+    只要求对象有 play/like/coin 三个属性，所以 VideoCandidate 和 VideoInfo 都能传。
+    录到最后一步跨菜排序时传进来的正是各道菜选中的 VideoInfo。
+    """
+    if not candidates:
+        return []
+    norms = {dim: _log_norm([getattr(c, dim) for c in candidates]) for dim in WEIGHTS}
+    return [
+        sum(WEIGHTS[dim] * norms[dim][i] for dim in WEIGHTS)
+        for i in range(len(candidates))
+    ]
+
+
 def score_candidates(candidates: list[VideoCandidate]) -> None:
     """就地为候选打分。分数只在同一道菜的候选之间可比。
 
@@ -141,12 +190,23 @@ def score_candidates(candidates: list[VideoCandidate]) -> None:
     （比如搜「番茄烧豆腐」返回「番茄烧茄子」）能留下，但要赢得先有足够好的数据。
     用硬阈值拦这类近似标题会误杀「西红柿炒鸡蛋」这种同义写法。
     """
-    if not candidates:
-        return
-    norms = {dim: _log_norm([getattr(c, dim) for c in candidates]) for dim in WEIGHTS}
-    for i, c in enumerate(candidates):
-        metrics = sum(WEIGHTS[dim] * norms[dim][i] for dim in WEIGHTS)
-        c.score = metrics * c.relevance
+    for cand, metrics in zip(candidates, composite_scores(candidates)):
+        cand.score = metrics * cand.relevance
+
+
+def rank_by_popularity(dishes: list[Dish]) -> list[Dish]:
+    """把菜按所选视频的热度重排，热的在前；没视频的排最后。
+
+    不能直接拿 VideoInfo.score 排：那个分数是每道菜在自己那批候选里归一化出来的，
+    各家的第一名都接近 1.0，跨菜比没有意义。得在「选中的这些视频」之间重新算一遍。
+    """
+    head = [d for d in dishes if d.video is not None]
+    tail = [d for d in dishes if d.video is None]
+    if len(head) < 2:
+        # 只有一道菜有视频就没得比，但「没视频的垫底」照样要成立
+        return head + tail
+    scores = composite_scores([d.video for d in head])
+    return [head[i] for i in sorted(range(len(head)), key=lambda i: -scores[i])] + tail
 
 
 def coarse_rank_key(c: VideoCandidate) -> float:
@@ -222,12 +282,16 @@ class BilibiliClient:
     def _build_candidates(self, dish: str, items: list[dict]) -> list[VideoCandidate]:
         out: list[VideoCandidate] = []
         seen: set[str] = set()
+        dropped_compilation = 0
         for it in items:
             bvid = it.get("bvid")
             # 结果里偶尔混入直播等非视频条目
             if not bvid or bvid in seen or it.get("type") != "video":
                 continue
             title = _clean_title(it.get("title", ""))
+            if looks_like_compilation(title):
+                dropped_compilation += 1
+                continue
             duration = parse_duration(it.get("duration"))
             if duration is not None and duration > self._max_duration:
                 continue
@@ -247,6 +311,10 @@ class BilibiliClient:
                     relevance=rel,
                 )
             )
+        if dropped_compilation:
+            # 合集被整批滤掉时会连带把「没找到合适的视频」也带出来，
+            # 不留一行日志的话，看上去就像搜索坏了
+            logger.debug("「%s」滤掉 %d 条合集类视频", dish, dropped_compilation)
         return out
 
     async def _fill_coin(self, candidates: list[VideoCandidate]) -> None:
@@ -299,7 +367,7 @@ class BilibiliClient:
         candidates = self._build_candidates(dish, items)
         if not candidates:
             logger.warning(
-                "「%s」搜到 %d 条，但没有一条通过相关性/时长过滤", dish, len(items)
+                "「%s」搜到 %d 条，但没有一条通过相关性/时长/合集过滤", dish, len(items)
             )
             return None
         logger.debug("「%s」搜到 %d 条，过滤后剩 %d 条", dish, len(items), len(candidates))

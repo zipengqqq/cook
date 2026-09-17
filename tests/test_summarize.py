@@ -5,7 +5,7 @@ import pytest
 from app import summarize as summarize_mod
 from app.config import Settings
 from app.models import Dish, VideoInfo
-from app.summarize import format_count, looks_intact, render_text, summarize
+from app.summarize import _build_user_message, looks_intact, render_text, summarize
 
 
 def _dish(name="醋溜土豆丝", reason="酸辣开胃", video=True):
@@ -25,36 +25,6 @@ def _dish(name="醋溜土豆丝", reason="酸辣开胃", video=True):
     return Dish(name=name, reason=reason, ingredients_used=["土豆"], video=v)
 
 
-# --- format_count ---
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        (0, "0"),
-        (1, "1"),
-        (9999, "9999"),
-        # 一万是「万」的起点
-        (10_000, "1.0万"),
-        (63_1368, "63.1万"),
-        (3_1917, "3.2万"),
-        # 一亿是「亿」的起点
-        (100_000_000, "1.0亿"),
-        (123_456_789, "1.2亿"),
-    ],
-)
-def test_format_count(raw, expected):
-    assert format_count(raw) == expected
-
-
-def test_format_count_boundaries_do_not_fall_through():
-    """9999 是「个」的最后一档，10000 该跳到「万」，别漏掉接缝。"""
-    assert format_count(9999) == "9999"
-    assert format_count(10_000).endswith("万")
-    assert format_count(99_999_999).endswith("万")
-    assert format_count(100_000_000).endswith("亿")
-
-
 # --- render_text ---
 
 
@@ -62,11 +32,31 @@ def test_render_text_includes_everything_essential():
     text = render_text("我有土豆", [_dish()])
     assert "醋溜土豆丝" in text
     assert "酸辣开胃" in text
-    assert "美食强" in text
     assert "https://www.bilibili.com/video/BV1UhMMzkEqi" in text
-    assert "63.1万" in text
-    assert "3.2万" in text
-    assert "3274" in text
+
+
+def test_render_text_drops_view_counts_and_video_metadata():
+    """只留菜名、理由、链接。数字、视频标题、UP 主都不该出现。"""
+    text = render_text("我有土豆", [_dish()])
+    for noise in ("播放", "点赞", "投币", "63.1万", "631368", "美食强", "当你想吃"):
+        assert noise not in text, f"输出里不该有「{noise}」"
+
+
+# --- 交给模型的字段：数字不给，模型就没机会写它 ---
+
+
+def test_model_message_hides_view_counts():
+    """数字一旦进了提示词，模型就会想把它写进输出里。所以这层就得截住。"""
+    msg = _build_user_message("我有土豆", [_dish()])
+    assert "631368" not in msg
+    assert "播放" not in msg
+    assert "美食强" not in msg
+    assert "https://www.bilibili.com/video/BV1UhMMzkEqi" in msg
+
+
+def test_model_message_marks_dish_without_video():
+    msg = _build_user_message("我有土豆", [_dish(video=False)])
+    assert "没找到合适的视频" in msg
 
 
 def test_render_text_does_not_leak_internal_score():
@@ -165,7 +155,7 @@ def _with_api(monkeypatch):
     monkeypatch.setattr(
         summarize_mod,
         "get_settings",
-        lambda: Settings(deepseek_api="test-key", deepseek_model="test-model"),
+        lambda: Settings(deepseek_key="test-key", deepseek_model="test-model"),
     )
 
 
@@ -207,7 +197,7 @@ def test_summarize_skips_model_without_api_key(monkeypatch):
     """没配密钥时不该去调模型，直接给模板。"""
     dishes = [_dish()]
     monkeypatch.setattr(
-        summarize_mod, "get_settings", lambda: Settings(deepseek_api="")
+        summarize_mod, "get_settings", lambda: Settings(deepseek_key="")
     )
     called = []
     monkeypatch.setattr(

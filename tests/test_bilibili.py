@@ -6,14 +6,19 @@
 import pytest
 
 from app.bilibili import (
+    COMPILATION_MARKERS,
     VideoCandidate,
     _clean_title,
     coarse_rank_key,
+    composite_scores,
     has_leading_part,
+    looks_like_compilation,
     parse_duration,
+    rank_by_popularity,
     relevance,
     score_candidates,
 )
+from app.models import Dish, VideoInfo
 
 # --- parse_duration ---
 
@@ -193,3 +198,97 @@ def test_coarse_rank_prefers_higher_play_and_like():
 
 def test_coarse_rank_handles_zero():
     assert coarse_rank_key(_cand()) == 0.0
+
+
+def test_composite_scores_does_not_mutate_candidates():
+    """跨菜排序要的是分数，不该顺手把候选自己的 score 也改了。"""
+    cands = [_cand(play=100, like=10, coin=1), _cand(play=1, like=1, coin=0)]
+    composite_scores(cands)
+    assert all(c.score == 0.0 for c in cands)
+
+
+# --- 合集过滤：一条视频教好几道菜的不要 ---
+
+# 真实搜到的一条，搜「酸辣土豆丝」时排在前面
+_COMPILATION = "今日食谱：芋头蒸排骨，酸辣土豆丝，青椒炒鱿鱼，清炒荷兰豆，青瓜肉片汤"
+
+
+def test_compilation_marker_detected():
+    assert looks_like_compilation(_COMPILATION)
+
+
+def test_compilation_detected_without_marker_word():
+    """标题里没有「合集」这类词，但并列了好几道各带动词的菜名，一样算。"""
+    title = "今晚做了三道菜：红烧肉炖土豆，青椒炒肉丝，番茄炒鸡蛋"
+    assert not any(m in title for m in COMPILATION_MARKERS)
+    assert looks_like_compilation(title)
+
+
+def test_single_dish_videos_are_not_compilations():
+    """这几条都是实测搜到并选中过的正常单菜视频，一个都不能误杀——
+
+    误杀的代价是「没找到合适的视频」，比漏掉几个合集更糟。
+    """
+    for title in (
+        "厨师长分享：“番茄炒蛋”的6种做法，多种版本适合各类人群",
+        "了不起的中国菜，大爷的麻婆豆腐，麻辣鲜香，配上米饭超好吃。",
+        "小葱拌豆腐，为什么饭店做的更好吃？最后一步很关键，老做法更香",
+        "番茄菌菇豆腐汤！喝一口仿佛全身开了暖气！",
+        "【土豆鸡蛋饼】外脆里嫩",
+    ):
+        assert not looks_like_compilation(title), title
+
+
+def test_step_list_from_one_recipe_is_not_a_compilation():
+    """罗列做菜步骤的标题不是合集。「以主料字收尾」这半条判据就是为它们设的。"""
+    for title in (
+        "红烧肉怎么做？焯水、煸炒、慢炖，一步都不能少",
+        "五花肉先焯水，再炒糖色，最后小火慢炖四十分钟",
+    ):
+        assert not looks_like_compilation(title), title
+
+
+# --- 跨菜排序 ---
+
+
+def _info(play=0, like=0, coin=0, url="https://www.bilibili.com/video/BV1"):
+    return VideoInfo(
+        title="t", url=url, author="a", play=play, like=like, coin=coin, score=0.0
+    )
+
+
+def _result(name: str, video: VideoInfo | None) -> Dish:
+    return Dish(name=name, reason="", ingredients_used=[], video=video)
+
+
+def test_rank_by_popularity_orders_hottest_first():
+    cold = _result("凉菜", _info(play=1_000, like=10, coin=1, url="https://b/cold"))
+    hot = _result("热菜", _info(play=5_000_000, like=200_000, coin=80_000, url="https://b/hot"))
+    mid = _result("中菜", _info(play=100_000, like=5_000, coin=1_000, url="https://b/mid"))
+    ranked = rank_by_popularity([cold, hot, mid])
+    assert [d.name for d in ranked] == ["热菜", "中菜", "凉菜"]
+
+
+def test_rank_by_popularity_recomputes_across_dishes():
+    """per-dish 的 score 是各自归一化出来的，各家的第一名都接近 1.0，
+    跨菜比毫无意义。这条锁住「必须重算」：内部 score 高的不一定排前面。
+    """
+    weak = _info(play=1_000, like=10, coin=1, url="https://b/weak")
+    weak.score = 1.0
+    strong = _info(play=9_000_000, like=300_000, coin=90_000, url="https://b/strong")
+    strong.score = 0.4
+    ranked = rank_by_popularity([_result("弱的", weak), _result("强的", strong)])
+    assert [d.name for d in ranked] == ["强的", "弱的"]
+
+
+def test_rank_by_popularity_puts_dishes_without_video_last():
+    hot = _result("热菜", _info(play=5_000_000, like=200_000, coin=80_000))
+    ranked = rank_by_popularity([_result("没搜到的", None), hot])
+    assert [d.name for d in ranked] == ["热菜", "没搜到的"]
+
+
+def test_rank_by_popularity_handles_short_lists():
+    only = _result("独苗", _info(play=1, like=1, coin=1))
+    assert rank_by_popularity([only]) == [only]
+    assert rank_by_popularity([]) == []
+    assert [d.name for d in rank_by_popularity([_result("全没视频", None)])] == ["全没视频"]

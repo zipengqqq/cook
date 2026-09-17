@@ -12,16 +12,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # 安装依赖（Windows）
-.venv/Scripts/python.exe app/main.py                          # 直接启动（PyCharm 点绿三角同此）
-.venv/Scripts/python.exe -m uvicorn app.main:app --reload     # 启动并热重载
+.venv/Scripts/python.exe main.py                              # 直接启动（PyCharm 点绿三角同此）
+.venv/Scripts/python.exe -m uvicorn main:app --reload         # 启动并热重载
 .venv/Scripts/python.exe -m pytest                            # 跑全部测试
 .venv/Scripts/python.exe -m pytest tests/test_bilibili.py -v  # 跑单个文件
 .venv/Scripts/python.exe -m pytest tests/test_bilibili.py::test_parse_duration -v  # 单个测试
 ```
 
-三种启动方式都验过：`app/main.py` 直接运行、`-m app.main`、`uvicorn app.main:app`。监听地址改 `app_host` / `app_port`（在 `app/config.py`）。
+三种启动方式都验过：`python main.py`、`uvicorn main:app`，以及从**其它工作目录**运行 `python D:/code/cook/main.py`（脚本所在目录会进 `sys.path`，所以照样能跑）。监听地址改 `app_host` / `app_port`（在 `app/config.py`）。
 
-**`app/main.py` 顶部那段 `sys.path` 补丁不能删。** 它让直接运行文件时绝对导入 `from app.xxx` 能找到包；相对导入在脚本模式下会报 `attempted relative import with no known parent package`。因此该文件的 import 写在补丁之后，不是笔误。
+**`main.py` 要留在项目根目录，别挪进 `app/` 里。** 根目录天然在 `sys.path` 上，`from app.xxx import` 开箱可用。放进包里就得改用相对导入，脚本模式下会报 `attempted relative import with no known parent package`，必须额外加 `sys.path` 补丁才能直接运行——这个弯路已经走过一次，别再绕回去。
 
 `__main__` 块里传的是 app 对象而非导入字符串，所以直接运行没有热重载——这是为了让 PyCharm 的断点能命中。要热重载走 uvicorn 命令行。
 
@@ -39,12 +39,12 @@ python -c "import app.agent as a, json; print(json.dumps(a.recommend_dishes('我
 
 ```
 POST /api/recommend
-   └─ app/main.py        并发编排（菜与菜之间用 asyncio.gather）
+   └─ main.py            并发编排（菜与菜之间用 asyncio.gather）
         ├─ app/agent.py      ① LLM：食材 → 菜名数组
         └─ app/bilibili.py   ②③ 每个菜并发检索并选出一条视频
 ```
 
-`app/agent.py` 的 LLM 调用是同步阻塞的，`app/main.py` 里用 `asyncio.to_thread` 扔进线程池——**不要**直接 `await`，也不要改成同步路由，否则并发检索退化成串行。
+`app/agent.py` 的 LLM 调用是同步阻塞的，`main.py` 里用 `asyncio.to_thread` 扔进线程池——**不要**直接 `await`，也不要改成同步路由，否则并发检索退化成串行。
 
 ### 关键实现约束
 
@@ -60,7 +60,7 @@ POST /api/recommend
 
 **`WEIGHTS` 是唯一需要反复调参的地方**，别把权重散进逻辑里。三个维度量级悬殊（播放量常是投币的几十上百倍），必须先 `_log_norm` 取对数再归一化，不能直接相加。
 
-**接口契约在 `app/models.py`，改动要同步 README。** 单个菜搜不到视频返回 `video: null`，检索失败也不该让整个请求挂掉（`app/main.py` 里 `return_exceptions=True` + 逐个降级）。
+**接口契约在 `app/models.py`，改动要同步 README。** 单个菜搜不到视频返回 `video: null`，检索失败也不该让整个请求挂掉（`main.py` 里 `return_exceptions=True` + 逐个降级）。
 
 ## 配置
 
@@ -73,7 +73,7 @@ DeepSeek 是 OpenAI 兼容接口，走 `langchain-openai` 的 `ChatOpenAI` 覆�
 提交信息用 `类型: 内容` 格式，中文描述，一行写完：
 
 ```
-feat: 支持直接运行 app/main.py 启动服务
+feat: 支持直接运行 main.py 启动服务
 fix: 修正同一主料不同菜的误匹配
 docs: 补充直接启动与端口配置说明
 test: 增加限定语过滤的回归用例

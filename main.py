@@ -3,22 +3,17 @@
 链路：LLM 出菜名 → 每个菜并发去 B 站检索 → 各自选一条最合适的视频。
 两道菜之间彼此独立，所以用 asyncio.gather 并发；LLM 调用是同步阻塞的，
 扔进线程池别挡住事件循环。
+
+放在项目根目录而不是 app/ 里，是为了 `python main.py` 能直接跑：脚本所在目录
+天然在 sys.path 上，`from app.xxx import` 开箱可用，不需要任何路径补丁。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import sys
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-
-# 直接跑本文件（`python app/main.py` 或 PyCharm 点绿三角）时 __package__ 是空的，
-# 相对导入会失败。补上项目根目录，下面就能用 `from app.xxx import`。
-# 通过 `-m app.main` 或 uvicorn 启动时这段不生效，路径本来就对。
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.agent import LLMError, recommend_dishes
 from app.bilibili import BilibiliClient
@@ -81,5 +76,5 @@ if __name__ == "__main__":
         f"可以直接试接口\n  按 Ctrl+C 停止\n"
     )
     # 传 app 对象而不是导入字符串：改了代码不会自动重启，但 PyCharm 的断点能正常命中。
-    # 需要热重载就用命令行：uvicorn app.main:app --reload
+    # 需要热重载就用命令行：uvicorn main:app --reload
     uvicorn.run(app, host=settings.app_host, port=settings.app_port, log_level="info")

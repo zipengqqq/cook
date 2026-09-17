@@ -40,15 +40,15 @@
 
 ```bash
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # Windows
-.venv/Scripts/python.exe app/main.py                          # 启动
+.venv/Scripts/python.exe main.py                              # 启动
 ```
 
-用 PyCharm 的话，直接对着 `app/main.py` 点绿三角就行，效果一样。
+用 PyCharm 的话，直接对着根目录的 `main.py` 点绿三角就行，效果一样。
 
 想要改完代码自动重启，改用 uvicorn 命令：
 
 ```bash
-.venv/Scripts/python.exe -m uvicorn app.main:app --reload
+.venv/Scripts/python.exe -m uvicorn main:app --reload
 ```
 
 如果要让局域网里其它设备也能访问，把 `app/config.py` 里的 `app_host` 改成 `0.0.0.0`。
@@ -115,8 +115,8 @@ DeepSeek 的接口是 OpenAI 兼容的，所以走 `langchain-openai` 就行，�
 ## 目录结构
 
 ```
+main.py          FastAPI 入口、路由注册、并发编排
 app/
-  main.py        FastAPI 入口、路由注册、并发编排
   config.py      配置与可调参数
   models.py      请求/响应模型（接口契约）
   agent.py       食材 → 菜名（LangChain + DeepSeek）

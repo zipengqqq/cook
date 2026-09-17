@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     request_timeout: float = 15.0
     max_concurrency: int = 6
 
-    # 直接运行 app/main.py 时的监听地址。想从局域网其它设备访问就改成 0.0.0.0
+    # 直接运行 main.py 时的监听地址。想从局域网其它设备访问就改成 0.0.0.0
     app_host: str = "127.0.0.1"
     app_port: int = 8000
 

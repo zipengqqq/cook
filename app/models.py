@@ -1,4 +1,8 @@
-"""接口的请求/响应模型。这份 schema 是前后端的契约，改动要同步 README。"""
+"""内部数据结构。
+
+接口只返回文本（见 app/summarize.py），但链路中间仍然走结构化对象：
+既方便在模块之间传递，也让渲染和校验都能写成纯函数来测。
+"""
 
 from pydantic import BaseModel, Field
 
@@ -30,8 +34,3 @@ class Dish(BaseModel):
     ingredients_used: list[str] = Field(default_factory=list)
     # 该菜确实搜不到合适视频时为 None，不影响其它菜返回
     video: VideoInfo | None = None
-
-
-class RecommendResponse(BaseModel):
-    query: str
-    dishes: list[Dish]

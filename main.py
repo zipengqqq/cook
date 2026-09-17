@@ -15,11 +15,13 @@ import logging
 import time
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 
 from app.agent import LLMError, recommend_dishes
 from app.bilibili import BilibiliClient
 from app.config import get_settings
-from app.models import Dish, RecommendRequest, RecommendResponse
+from app.models import Dish, RecommendRequest
+from app.summarize import summarize
 
 logging.basicConfig(
     level=get_settings().log_level,
@@ -46,8 +48,8 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/api/recommend", response_model=RecommendResponse)
-async def recommend(req: RecommendRequest) -> RecommendResponse:
+@app.post("/api/recommend", response_class=PlainTextResponse)
+async def recommend(req: RecommendRequest) -> PlainTextResponse:
     settings = get_settings()
     started = time.perf_counter()
 
@@ -77,13 +79,17 @@ async def recommend(req: RecommendRequest) -> RecommendResponse:
             video = None
         result.append(Dish(**dish, video=video))
 
+    # 润色同样走线程池：它是同步阻塞的
+    text = await asyncio.to_thread(summarize, req.query, result)
+
+    # 耗时只进日志，不进返回给用户的文本
     logger.info(
         "请求完成：%d 道菜，%d 道有视频，总耗时 %.1fs",
         len(result),
         sum(1 for d in result if d.video is not None),
         time.perf_counter() - started,
     )
-    return RecommendResponse(query=req.query, dishes=result)
+    return PlainTextResponse(text)
 
 
 if __name__ == "__main__":

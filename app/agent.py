@@ -10,12 +10,16 @@ DeepSeek 是 OpenAI 兼容接口，所以用 langchain-openai 覆写 base_url �
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是家常菜推荐助手。用户会告诉你手头有什么食材、或想吃什么。
 
@@ -113,6 +117,8 @@ def recommend_dishes(query: str, count: int | None = None) -> list[dict]:
         timeout=settings.request_timeout,
     )
 
+    logger.info("向模型请求 %d 道菜：%s", count, query)
+    started = time.perf_counter()
     try:
         resp = llm.invoke(
             [
@@ -122,9 +128,27 @@ def recommend_dishes(query: str, count: int | None = None) -> list[dict]:
         )
     except Exception as exc:
         raise LLMError(f"调用模型失败：{exc}") from exc
+    elapsed = time.perf_counter() - started
 
     content = resp.content if isinstance(resp.content, str) else str(resp.content)
-    dishes = _normalize(_extract_array(content), count)
+    logger.debug("模型原始输出（耗时 %.1fs）：%s", elapsed, content[:800])
+
+    try:
+        raw = _extract_array(content)
+    except LLMError:
+        # 解析失败必须留下原始输出，否则只看到「解析不出来」没法定位提示词问题
+        logger.error("模型输出解析失败，原始内容：%s", content[:1500])
+        raise
+
+    dishes = _normalize(raw, count)
     if not dishes:
+        logger.error("模型输出解析后无可用菜名，原始内容：%s", content[:1500])
         raise LLMError("模型没有返回任何可用的菜名")
+
+    logger.info(
+        "模型返回 %d 道菜（耗时 %.1fs）：%s",
+        len(dishes),
+        elapsed,
+        "、".join(d["name"] for d in dishes),
+    )
     return dishes

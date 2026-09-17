@@ -68,6 +68,22 @@ POST /api/recommend
 
 DeepSeek 是 OpenAI 兼容接口，走 `langchain-openai` 的 `ChatOpenAI` 覆写 `base_url`，不要引入单独的 DeepSeek SDK。
 
+## 日志
+
+各模块用 `logging.getLogger(__name__)`，级别由 `log_level` 控制（`app/config.py`，可用 `.env` 的 `LOG_LEVEL` 覆盖，默认 `INFO`）。
+
+**INFO 每次请求约 7 行**：模型请求、模型返回（含菜名和耗时）、每道菜选中的视频（含 score 与三个维度原始值）、请求完成汇总（含总耗时和几道菜有视频）。
+
+**DEBUG 用于调参**：多出模型原始输出、每个菜的搜索条数与过滤后条数、落选候选及其分数、buvid3 获取情况。调 `WEIGHTS` 时开这一档，落选候选那行能直接看出权重是否合理。
+
+```bash
+LOG_LEVEL=DEBUG .venv/Scripts/python.exe main.py
+```
+
+**`main.py` 里压第三方 logger 的那段循环不能删。** `httpx`/`httpcore`/`openai` 会把每次 HTTP 连接的细节打成 INFO/DEBUG，本项目一次推荐要发二三十个请求，不压掉的话 INFO 档被冲没、DEBUG 档完全不可用。
+
+**B 站链路上的失败路径必须留日志。** 这些地方原本是静默 `return None`：搜索失败、没有候选通过过滤、拿不到 buvid3。它们共同的表现是「每道菜都没有视频」，没有任何线索指向原因，B 站一改接口就只能靠猜。`_fill_coin` 末尾那条「投币数全为 0」的告警也是同理——它意味着投币维度整体失效、打分已悄悄退化成两个维度。
+
 ## 提交约定
 
 提交信息用 `类型: 内容` 格式，中文描述，一行写完：

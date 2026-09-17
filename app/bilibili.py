@@ -15,13 +15,16 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import httpx
 
 from .models import VideoInfo
+
+logger = logging.getLogger(__name__)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -194,8 +197,13 @@ class BilibiliClient:
                 if b3:
                     self._client.cookies.set("buvid3", b3, domain=".bilibili.com")
                     self._buvid_ready = True
-            except Exception:
-                pass
+                    logger.debug("已取得 buvid3")
+                else:
+                    logger.warning("finger/spi 未返回 b_3，搜索可能被风控拦截")
+            except Exception as exc:
+                # 这里原来是静默 pass：拿不到 buvid3 时每道菜都会没有视频，
+                # 但日志上一片安静，根本查不出原因
+                logger.warning("获取 buvid3 失败，搜索可能被风控拦截：%s", exc)
 
     async def _search(self, keyword: str) -> list[dict]:
         await self._ensure_buvid()
@@ -253,27 +261,48 @@ class BilibiliClient:
                     resp = await self._client.get(VIEW_URL, params={"bvid": c.bvid})
                     payload = resp.json()
                     if payload.get("code") != 0:
+                        logger.debug(
+                            "取投币失败 %s：code=%s %s",
+                            c.bvid,
+                            payload.get("code"),
+                            payload.get("message"),
+                        )
                         return
                     stat = (payload.get("data") or {}).get("stat") or {}
                     c.coin = int(stat.get("coin") or 0)
                     c.like = int(stat.get("like") or c.like)
                     c.play = int(stat.get("view") or c.play)
-                except Exception:
-                    return
+                except Exception as exc:
+                    logger.debug("取投币异常 %s：%s", c.bvid, exc)
 
-        if candidates:
-            await asyncio.gather(*(one(c) for c in candidates))
+        if not candidates:
+            return
+        await asyncio.gather(*(one(c) for c in candidates))
+
+        # 全员投币数为 0 通常意味着 view 接口整体失效了，此时打分实际只剩
+        # 点赞和播放两个维度在起作用。不报出来的话，这个维度静默失效没人会发现。
+        if candidates and all(c.coin == 0 for c in candidates):
+            logger.warning(
+                "%d 条候选的投币数全为 0，投币维度可能已失效，打分退化为点赞+播放",
+                len(candidates),
+            )
 
     async def pick_best(self, dish: str) -> VideoInfo | None:
         """给一道菜选一条最合适的视频，搜不到返回 None。"""
         try:
             items = await self._search(dish)
-        except Exception:
+        except Exception as exc:
+            # 原本这里是静默 return None：B 站一改接口，所有菜集体没视频却查不出原因
+            logger.warning("搜索「%s」失败：%s", dish, exc)
             return None
 
         candidates = self._build_candidates(dish, items)
         if not candidates:
+            logger.warning(
+                "「%s」搜到 %d 条，但没有一条通过相关性/时长过滤", dish, len(items)
+            )
             return None
+        logger.debug("「%s」搜到 %d 条，过滤后剩 %d 条", dish, len(items), len(candidates))
 
         # 粗排后只对少量候选补投币，避免每个菜打 20 次详情请求
         candidates.sort(key=coarse_rank_key, reverse=True)
@@ -281,5 +310,17 @@ class BilibiliClient:
         await self._fill_coin(shortlist)
 
         score_candidates(shortlist)
-        best = max(shortlist, key=lambda c: c.score)
+        ranked = sorted(shortlist, key=lambda c: c.score, reverse=True)
+        best = ranked[0]
+
+        # 这行是调 WEIGHTS 时最该看的：选中的是谁、三个维度各是多少
+        logger.info(
+            "「%s」选中 %s（score=%.3f play=%d like=%d coin=%d）%s",
+            dish, best.bvid, best.score, best.play, best.like, best.coin, best.title,
+        )
+        logger.debug(
+            "「%s」落选候选：%s",
+            dish,
+            "；".join(f"{c.bvid}({c.score:.3f})" for c in ranked[1:]) or "无",
+        )
         return best.to_info()

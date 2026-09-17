@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from fastapi import FastAPI, HTTPException
 
@@ -20,8 +21,18 @@ from app.bilibili import BilibiliClient
 from app.config import get_settings
 from app.models import Dish, RecommendRequest, RecommendResponse
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=get_settings().log_level,
+    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
+
+# 这些库把每次 HTTP 连接的细节都打成 INFO/DEBUG，一次请求能刷几十行。
+# 不压掉的话，无论 INFO 还是 DEBUG 档都看不见自己的日志。
+# httpx2 / httpcore2 是较新的包名，与 httpx / httpcore 并列写上以防环境差异。
+for _noisy in ("httpx", "httpcore", "httpx2", "httpcore2", "openai"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 app = FastAPI(
     title="今天晚饭吃什么",
@@ -38,10 +49,12 @@ async def health() -> dict:
 @app.post("/api/recommend", response_model=RecommendResponse)
 async def recommend(req: RecommendRequest) -> RecommendResponse:
     settings = get_settings()
+    started = time.perf_counter()
 
     try:
         dishes = await asyncio.to_thread(recommend_dishes, req.query, settings.dish_count)
     except LLMError as exc:
+        logger.warning("推荐失败（模型环节）：%s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     async with BilibiliClient(
@@ -64,6 +77,12 @@ async def recommend(req: RecommendRequest) -> RecommendResponse:
             video = None
         result.append(Dish(**dish, video=video))
 
+    logger.info(
+        "请求完成：%d 道菜，%d 道有视频，总耗时 %.1fs",
+        len(result),
+        sum(1 for d in result if d.video is not None),
+        time.perf_counter() - started,
+    )
     return RecommendResponse(query=req.query, dishes=result)
 
 

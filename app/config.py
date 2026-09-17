@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = 8000
 
+    # 日志级别。调参看候选明细时改成 DEBUG
+    log_level: str = "INFO"
+
 
 @lru_cache
 def get_settings() -> Settings:

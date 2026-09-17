@@ -12,13 +12,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # 安装依赖（Windows）
-.venv/Scripts/python.exe -m uvicorn app.main:app --reload     # 本地启动，交互文档在 /docs
+.venv/Scripts/python.exe app/main.py                          # 直接启动（PyCharm 点绿三角同此）
+.venv/Scripts/python.exe -m uvicorn app.main:app --reload     # 启动并热重载
 .venv/Scripts/python.exe -m pytest                            # 跑全部测试
 .venv/Scripts/python.exe -m pytest tests/test_bilibili.py -v  # 跑单个文件
 .venv/Scripts/python.exe -m pytest tests/test_bilibili.py::test_parse_duration -v  # 单个测试
 ```
 
-激活 venv 后（`source .venv/Scripts/activate`）直接用 `pytest` / `uvicorn` 亦可。两套解释器都验过，结果一致。
+三种启动方式都验过：`app/main.py` 直接运行、`-m app.main`、`uvicorn app.main:app`。监听地址改 `app_host` / `app_port`（在 `app/config.py`）。
+
+**`app/main.py` 顶部那段 `sys.path` 补丁不能删。** 它让直接运行文件时绝对导入 `from app.xxx` 能找到包；相对导入在脚本模式下会报 `attempted relative import with no known parent package`。因此该文件的 import 写在补丁之后，不是笔误。
+
+`__main__` 块里传的是 app 对象而非导入字符串，所以直接运行没有热重载——这是为了让 PyCharm 的断点能命中。要热重载走 uvicorn 命令行。
+
+激活 venv 后（`source .venv/Scripts/activate`）直接用 `pytest` / `uvicorn` 亦可。两套解释器（conda 与 `.venv`）都验过，结果一致。
 
 跑一次真实链路（会消耗模型额度、会请求 B 站）：
 
@@ -60,6 +67,20 @@ POST /api/recommend
 `.env`（已存在，勿提交）：`DEEPSEEK_API`、`DEEPSEEK_MODEL`。其余可调参数在 `app/config.py`，都有默认值。
 
 DeepSeek 是 OpenAI 兼容接口，走 `langchain-openai` 的 `ChatOpenAI` 覆写 `base_url`，不要引入单独的 DeepSeek SDK。
+
+## 提交约定
+
+提交信息用 `类型: 内容` 格式，中文描述，一行写完：
+
+```
+feat: 支持直接运行 app/main.py 启动服务
+fix: 修正同一主料不同菜的误匹配
+docs: 补充直接启动与端口配置说明
+test: 增加限定语过滤的回归用例
+chore: 忽略临时目录与生成物
+```
+
+类型取 `feat` / `fix` / `docs` / `test` / `chore`。冒号后用**中文**，冒号后跟一个空格。
 
 ## 测试策略
 

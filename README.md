@@ -40,10 +40,18 @@
 
 ```bash
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # Windows
+.venv/Scripts/python.exe app/main.py                          # 启动
+```
+
+用 PyCharm 的话，直接对着 `app/main.py` 点绿三角就行，效果一样。
+
+想要改完代码自动重启，改用 uvicorn 命令：
+
+```bash
 .venv/Scripts/python.exe -m uvicorn app.main:app --reload
 ```
 
-如果你机器上的默认 `python` 已经指向本项目的虚拟环境，直接 `pip install -r requirements.txt` + `uvicorn app.main:app --reload` 也可以。
+如果要让局域网里其它设备也能访问，把 `app/config.py` 里的 `app_host` 改成 `0.0.0.0`。
 
 启动后打开 http://127.0.0.1:8000/docs 可以直接在浏览器里试接口（FastAPI 自带的交互文档）。
 

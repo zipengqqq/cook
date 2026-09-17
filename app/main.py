@@ -9,13 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 
-from .agent import LLMError, recommend_dishes
-from .bilibili import BilibiliClient
-from .config import get_settings
-from .models import Dish, RecommendRequest, RecommendResponse
+# 直接跑本文件（`python app/main.py` 或 PyCharm 点绿三角）时 __package__ 是空的，
+# 相对导入会失败。补上项目根目录，下面就能用 `from app.xxx import`。
+# 通过 `-m app.main` 或 uvicorn 启动时这段不生效，路径本来就对。
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.agent import LLMError, recommend_dishes
+from app.bilibili import BilibiliClient
+from app.config import get_settings
+from app.models import Dish, RecommendRequest, RecommendResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,3 +70,16 @@ async def recommend(req: RecommendRequest) -> RecommendResponse:
         result.append(Dish(**dish, video=video))
 
     return RecommendResponse(query=req.query, dishes=result)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    settings = get_settings()
+    print(
+        f"\n  服务已启动，打开 http://{settings.app_host}:{settings.app_port}/docs "
+        f"可以直接试接口\n  按 Ctrl+C 停止\n"
+    )
+    # 传 app 对象而不是导入字符串：改了代码不会自动重启，但 PyCharm 的断点能正常命中。
+    # 需要热重载就用命令行：uvicorn app.main:app --reload
+    uvicorn.run(app, host=settings.app_host, port=settings.app_port, log_level="info")

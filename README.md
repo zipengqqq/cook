@@ -175,6 +175,21 @@ LOG_LEVEL=DEBUG .venv/Scripts/python.exe main.py
 
 调 `WEIGHTS` 权重时建议开 DEBUG，落选候选那行能直接看出权重是不是合理。B 站请求的细节日志默认是压掉的，不然一次请求几十行会淹没有效信息。
 
+### 日志文件
+
+终端那份关掉就没了，所以同时写一份到 `logs/app.log`——回头查「上次那个菜为什么没视频」时，要的正是过去的那几行。文件按 5MB 轮转，留 3 份备份，不会无限涨。
+
+路径和轮转都可以在 `.env` 里改：
+
+```bash
+LOG_DIR=logs                    # 相对路径按项目根目录算，不跟着启动目录跑
+LOG_FILE=app.log
+LOG_MAX_BYTES=5242880
+LOG_BACKUP_COUNT=3
+```
+
+`logs/` 已经在 `.gitignore` 里。跑测试用的是临时目录，不会污染这个文件。
+
 ## 测试
 
 ```bash

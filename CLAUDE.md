@@ -122,7 +122,9 @@ DeepSeek 是 OpenAI 兼容接口，走 `langchain-openai` 的 `ChatOpenAI` 覆�
 
 ## 日志
 
-各模块用 `logging.getLogger(__name__)`，级别由 `log_level` 控制（`app/config.py`，可用 `.env` 的 `LOG_LEVEL` 覆盖，默认 `INFO`）。
+各模块用 `logging.getLogger(__name__)`，装配在 `app/logging_setup.py`，`main.py` 顶部调一次 `setup_logging()` 拿到日志文件路径。级别由 `log_level` 控制（`app/config.py`，可用 `.env` 的 `LOG_LEVEL` 覆盖，默认 `INFO`）。
+
+**日志同时写终端和文件**（`log_dir` / `log_file`，默认 `logs/app.log`，按 `log_max_bytes` × `log_backup_count` 轮转）。终端那份一关就没了，而排查问题时最想回头的恰恰是过去的那几行——哪道菜选中了哪条视频、B 站是不是被风控拦了、投币维度有没有整体失效。
 
 **INFO 每次请求约 7 行**（菜多时按菜数线性增加）：模型请求、模型返回（含菜名和耗时）、每道菜选中的视频（含 score 与三个维度原始值）、请求完成汇总（含总耗时和几道菜有视频）。
 
@@ -134,7 +136,13 @@ DeepSeek 是 OpenAI 兼容接口，走 `langchain-openai` 的 `ChatOpenAI` 覆�
 LOG_LEVEL=DEBUG .venv/Scripts/python.exe main.py
 ```
 
-**`main.py` 里压第三方 logger 的那段循环不能删。** `httpx`/`httpcore`/`openai` 会把每次 HTTP 连接的细节打成 INFO/DEBUG，本项目一次推荐要发二三十个请求，不压掉的话 INFO 档被冲没、DEBUG 档完全不可用。
+**压第三方 logger 的那份清单（`NOISY_LOGGERS`）不能删。** `httpx`/`httpcore`/`openai` 会把每次 HTTP 连接的细节打成 INFO/DEBUG，本项目一次推荐要发二三十个请求，不压掉的话 INFO 档被冲没、DEBUG 档完全不可用。
+
+**`app/logging_setup.py` 里三个坑不能踩回去**，改这个文件前先读模块开头的说明：文件处理器必须显式 `encoding="utf-8"`（Windows 默认 GBK，中文要么乱码要么抛 `UnicodeEncodeError`，而日志自己挂掉是静默的）；uvicorn 有自己的一套 dictConfig，`python main.py` 这条路必须给 `uvicorn.run()` 传 `log_config=None`，否则请求日志进不了文件；uvicorn 的 logger 默认不往 root 传，得单独接管，但接管时**终端和文件两个处理器都要挂**——只挂文件的话，把它跟 root 的关系一断，uvicorn 的启动信息和 500 的 traceback 就从终端上消失了，而那是最需要留下来的一类日志。
+
+**`_NAME_ALIASES` 把 `uvicorn.error` 显示成 `uvicorn`，别当成笔误删掉。** `uvicorn.error` 是 uvicorn 的万能 logger——启动、lifespan、协议错误全往它上面打，名字里的 error 是早期「只有 access 和 其它两类」留下的，跟级别无关。原样打出来 `grep -i error` 会命中每一行正常启动，而排障时最常用的就是这个命令。注意这跟「照 FinRAG 那样用 loguru」不是一回事：那边靠不接管 stdlib logging 做到「看不到 error」，代价是 uvicorn 的启动信息和 500 traceback 根本不进日志文件。
+
+**`conftest.py` 把 `LOG_DIR` 指向临时目录，这行不能删。** `test_api.py` 要导入 `main`，导入即装配日志，不拦的话每跑一次测试都往真实的 `logs/app.log` 里灌一批请求日志，排查线上问题时这些噪音和真实记录混在一起根本分不出来。
 
 **B 站链路上的失败路径必须留日志。** 这些地方原本是静默 `return None`：搜索失败、没有候选通过过滤、拿不到 buvid3。它们共同的表现是「每道菜都没有视频」，没有任何线索指向原因，B 站一改接口就只能靠猜。`_fill_coin` 末尾那条「投币数全为 0」的告警也是同理——它意味着投币维度整体失效、打分已悄悄退化成两个维度。
 

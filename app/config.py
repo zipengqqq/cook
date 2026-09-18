@@ -38,6 +38,13 @@ class Settings(BaseSettings):
 
     # 日志级别。调参看候选明细时改成 DEBUG
     log_level: str = "INFO"
+    # 终端那份关掉就没了，所以同时写一份到文件。相对路径按**项目根目录**算，
+    # 不是当前工作目录（从别处 `python D:/code/cook/main.py` 是支持的用法）
+    log_dir: str = "logs"
+    log_file: str = "app.log"
+    # 按大小轮转。长期跑不轮转的话这个文件会一直涨
+    log_max_bytes: int = 5 * 1024 * 1024
+    log_backup_count: int = 3
 
 
 @lru_cache

@@ -21,21 +21,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from app.agent import LLMError, recommend_dishes
 from app.bilibili import BilibiliClient, rank_by_popularity
 from app.config import get_settings
+from app.logging_setup import setup_logging
 from app.models import Dish, RecommendRequest, RecommendResponse
 from app.summarize import summarize
 
-logging.basicConfig(
-    level=get_settings().log_level,
-    format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
+# 终端 + 轮转文件。压第三方 logger 的那份清单也搬进了 app/logging_setup.py，
+# 别在别处再配一遍 basicConfig，两边会打架
+LOG_PATH = setup_logging()
 logger = logging.getLogger(__name__)
-
-# 这些库把每次 HTTP 连接的细节都打成 INFO/DEBUG，一次请求能刷几十行。
-# 不压掉的话，无论 INFO 还是 DEBUG 档都看不见自己的日志。
-# httpx2 / httpcore2 是较新的包名，与 httpx / httpcore 并列写上以防环境差异。
-for _noisy in ("httpx", "httpcore", "httpx2", "httpcore2", "openai"):
-    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 app = FastAPI(
     title="今天吃什么",
@@ -132,9 +125,21 @@ if __name__ == "__main__":
 
     settings = get_settings()
     print(
-        f"\n  服务已启动，打开 http://{settings.app_host}:{settings.app_port}/docs "
-        f"可以直接试接口\n  按 Ctrl+C 停止\n"
+        f"\n  提问页 http://{settings.app_host}:{settings.app_port}/"
+        f"\n  接口文档 http://{settings.app_host}:{settings.app_port}/docs"
+        f"\n  日志文件 {LOG_PATH}"
+        f"\n  按 Ctrl+C 停止\n"
     )
     # 传 app 对象而不是导入字符串：改了代码不会自动重启，但 PyCharm 的断点能正常命中。
     # 需要热重载就用命令行：uvicorn main:app --reload
-    uvicorn.run(app, host=settings.app_host, port=settings.app_port, log_level="info")
+    #
+    # log_config=None 是关键：uvicorn 默认会跑一遍自己的 dictConfig，把上面
+    # setup_logging 装好的东西从 uvicorn.* 上摘掉，请求日志就进不了文件了。
+    # 让它别插手，那些日志会顺着 root 落到同一套处理器上。
+    uvicorn.run(
+        app,
+        host=settings.app_host,
+        port=settings.app_port,
+        log_level="info",
+        log_config=None,
+    )

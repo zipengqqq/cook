@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目目标
 
-「今天晚饭吃什么」推荐服务。纯后端（无前端），FastAPI 暴露接口，入参是一句自然语言的食材/需求描述，出参是若干道菜 + 每道菜一条 B 站做饭视频链接。
+「今天吃什么」推荐服务。FastAPI 暴露接口，入参是一句自然语言的食材/需求描述，出参是若干道菜 + 每道菜一条 B 站做饭视频链接。另有一个单文件提问页挂在 `/`，和接口同一个进程——**启动只有 `python main.py` 一条命令**，不需要第二个服务、不需要 node、没有任何构建步骤。
 
 ## 常用命令
 
@@ -20,6 +20,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 
 三种启动方式都验过：`python main.py`、`uvicorn main:app`，以及从**其它工作目录**运行 `python D:/code/cook/main.py`（脚本所在目录会进 `sys.path`，所以照样能跑）。监听地址改 `app_host` / `app_port`（在 `app/config.py`）。
+
+起来之后：`http://127.0.0.1:8000/` 是提问页，`/docs` 是接口文档，`/health` 是存活探针。**页面和接口同源同进程**，所以没有 CORS 那一套，也不需要单独跑什么东西。
 
 **`main.py` 要留在项目根目录，别挪进 `app/` 里。** 根目录天然在 `sys.path` 上，`from app.xxx import` 开箱可用。放进包里就得改用相对导入，脚本模式下会报 `attempted relative import with no known parent package`，必须额外加 `sys.path` 补丁才能直接运行——这个弯路已经走过一次，别再绕回去。
 
@@ -38,7 +40,8 @@ python -c "import app.agent as a, json; print(json.dumps(a.recommend_dishes('我
 四段链路，彼此独立、可分别调试：
 
 ```
-POST /api/recommend  →  纯文本
+GET /                →  app/static/index.html（提问页，同一个进程）
+POST /api/recommend  →  默认纯文本；Accept: application/json 时给卡片要的结构化数据
    └─ main.py            并发编排（菜与菜之间用 asyncio.gather）
         ├─ app/agent.py      ① LLM：食材 → 菜名数组
         ├─ app/bilibili.py   ②③ 每个菜并发检索并选出一条视频
@@ -62,7 +65,15 @@ POST /api/recommend  →  纯文本
 
 **`WEIGHTS` 是唯一需要反复调参的地方**，别把权重散进逻辑里。三个维度量级悬殊（播放量常是投币的几十上百倍），必须先 `_log_norm` 取对数再归一化，不能直接相加。
 
-**接口只返回文本，不再返回 JSON。** 响应体是 `text/plain`，由 `app/summarize.py` 渲染。`app/models.py` 里的结构体只在模块之间传值用，不是对外契约。单个菜搜不到视频时文字里写「没找到合适的视频」，检索失败也不该让整个请求挂掉（`main.py` 里 `return_exceptions=True` + 逐个降级）。
+**接口默认返回文本，JSON 走内容协商。** 不带 `Accept` 头（或带 `text/plain`）时响应体仍是 `text/plain`，由 `app/summarize.py` 渲染；带 `Accept: application/json` 时返回卡片要的结构化数据。**默认那条路的行为不能变**——README 的例子、`/docs`、现有的 curl 用法全建立在它之上。
+
+**JSON 出口只吐四个字段：菜名、理由、链接、封面**，由 `app/models.py` 的 `to_card()` 负责裁剪。`Dish` / `VideoInfo` 里还带着 score、播放量、视频标题、UP 主，那些是排序和排障要用的内部数据，**不是对外契约，别把内部对象直接序列化出去**。`VideoInfo.cover` 是唯一为卡片加的字段——它不含任何文字信息，所以不违背上面「输出只有三样」那条。字段集和泄漏各有一道测试盯着。
+
+**JSON 分支跳过 `summarize()`。** 卡片不需要那段润色过的话，跳过等于每次推荐少调一次模型、少等几秒。别为了「两条路统一一下」把它加回去。
+
+**封面图必须补协议前缀。** 搜索接口返回的 `pic` 是协议相对地址（`//i2.hdslb.com/...`），原样塞进 `<img src>` 会被浏览器当成本站路径，图**全破而且一声不吭**。`_normalize_cover()` 负责补 `https:`；`_fill_coin()` 里还有一条从 view 接口兜底补封面的分支，不额外发请求——那一趟本来就要打。
+
+单个菜搜不到视频时，文字里写「没找到合适的视频」、JSON 里 `video` 给 `null`，检索失败也不该让整个请求挂掉（`main.py` 里 `return_exceptions=True` + 逐个降级）。
 
 **输出只有菜名、推荐理由、链接三样。** 播放量/点赞/投币不进输出，视频标题和 UP 主也不进——这是明确要求，用户不看这些。所以 `_facts()` 只摊平这三个字段：给模型的字段越少，它能写歪的地方越少。**别因为"信息更全"又把数字或视频标题加回去**；真加了，`test_render_text_drops_view_counts_and_video_metadata` 会红。
 
@@ -71,6 +82,35 @@ POST /api/recommend  →  纯文本
 **菜的排序用 `rank_by_popularity()` 跨菜重算，别直接拿 `VideoInfo.score` 排。** 那个分数是每道菜在自己那批候选里归一化出来的，各家的第一名都接近 1.0，跨菜比排出来的是"谁的相关性高"而不是"谁火"。没视频的菜一律垫底。
 
 **`app/summarize.py` 的兜底链不能拆。** 模型只负责把话说顺，产出后 `looks_intact()` 校验链接和菜名，缺一个就退回 `render_text()` 模板渲染。模型超时、返回空、乱写都会走兜底，`summarize()` 不会抛异常。改这一段时保持"模型润色只是锦上添花、模板永远能出正确结果"这个性质——链接错一个是这套东西最严重的故障。
+
+## 提问页
+
+`app/static/index.html`，**一个文件，HTML/CSS/JS 全内联，没有依赖也没有构建步骤**。加它就为了不用每次开 `/docs` 或写 curl。
+
+`main.py` 的 `GET /` 每次请求重新读盘再发出去，而不是启动时读一次——这样改完 HTML 刷新浏览器就能看到，不用重启服务。文件十几 KB，这点开销可以忽略。
+
+**页面为什么不是用 Python 生成的。** 这里讨论过一次：想要的是「只启动一个服务」，而这一点由 FastAPI 同时伺服页面和接口就已经满足了——页面是不是 HTML 跟起几个服务无关。真正要换 Python 写页面，只有两条路：改成服务端渲染（能删掉全部 JS，但每次提问整页刷新，等待那十几秒没有计时器），或者引 NiceGUI 这类框架（能挂进现有 FastAPI，但为一个输入框引一整套响应式框架不划算）。都没有换。
+
+改这个页面时要注意的三条：
+
+- **DOM 拼接一律走 `textContent` 和属性赋值，不碰 `innerHTML`。** 菜名和推荐理由是模型生成的，拼字符串就等于给它一个注入点。
+- **有视频的菜渲染成 `<a>`，没搜到视频的渲染成虚线 `<div>`**，不装成能点的样子。封面为空时用菜名首字做占位；`<img>` 带 `referrerPolicy="no-referrer"`，实测 B 站图床带不带 Referer 都放行，留着当保险。
+- **`.status` 上那条 `[hidden] { display: none !important }` 不能删。** 浏览器默认的 `[hidden]` 规则来自 UA 样式表，优先级永远低于作者样式——`.status` 一旦写了 `display: flex`，元素上的 `hidden` 属性就彻底失效，而且不报任何错。**已经出过一次**：请求完成后转圈的状态条赖着不走，和结果一起显示。所有会用到 `hidden` 的元素都靠这条兜底。
+
+### 怎么验证页面改动
+
+语法用 `node --check`（把 `<script>` 里的内容抽出来）。**要真看渲染结果，这台机器上有 Chrome 可以无头截图**，不需要 playwright：
+
+```bash
+"/c/Program Files/Google/Chrome/Application/chrome.exe" \
+  --headless=new --disable-gpu --no-sandbox --hide-scrollbars \
+  --window-size=1180,620 --virtual-time-budget=4000 \
+  --screenshot="D:/tmp/out.png" "file:///D:/tmp/page.html"
+```
+
+`--no-sandbox` 不能省，少了它截图会静默失败。页面是自包含的，`file://` 直接打开即可。
+
+要看有数据的渲染结果，就把页面复制一份、在 `</body>` 前插一段脚本把 `window.fetch` 换成立即返回假数据的桩，再调一次 `form.requestSubmit()`。**每个 `<script>` 都别忘了闭合标签**——漏一个就把后面的脚本一起吞掉，整段 JS 语法错误、一条都不跑，而页面看上去只是"没反应"，很难查（这也踩过一次）。做对照组（把改动删掉看能不能复现 bug）是值得的，上面那条 `[hidden]` 就是这么定性的。
 
 ## 配置
 
@@ -114,6 +154,8 @@ chore: 忽略临时目录与生成物
 
 ## 测试策略
 
-打分与筛选是纯函数，是测试重点，已覆盖归一化、量级悬殊、全零、并列、限定语等边界。两个回归用例直接对应上面那两个 bug，别删。
+打分与筛选是纯函数，是测试重点，已覆盖归一化、量级悬殊、全零、并列、限定语等边界。两个回归用例直接对应上面那两个 bug，别删。合集过滤那条反例（`test_single_dish_videos_are_not_compilations`）同理。
 
-网络调用（B 站搜索/view、DeepSeek）不进单测，在模块方法边界打桩。根目录 `conftest.py` 只为把项目根加进 `sys.path`。
+`tests/test_api.py` 管接口层：走 `fastapi.testclient`，把 LLM 和 B 站都在 `main` 的模块命名空间里打桩。它钉的是三件事——**默认出口仍是 `text/plain`**、**JSON 只吐四个字段且不泄漏内部数据**、**JSON 分支不调 `summarize()`**。
+
+网络调用（B 站搜索/view、DeepSeek）不进单测，在模块方法边界打桩。根目录 `conftest.py` 只为把项目根加进 `sys.path`。页面里的 JS 不在单测范围内。

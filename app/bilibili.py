@@ -82,6 +82,18 @@ def _clean_title(raw: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", raw or "")).strip()
 
 
+def _normalize_cover(raw: object) -> str:
+    """把接口给的 pic 补成能直接塞进 <img src> 的完整地址。
+
+    接口返回的是协议相对地址（`//i2.hdslb.com/bfs/archive/xxx.jpg`）。原样写进
+    前端，浏览器会当成**本站**的相对路径去请求，图必然全是破的，而且看不出原因。
+    """
+    if not isinstance(raw, str):
+        return ""
+    url = raw.strip()
+    return "https:" + url if url.startswith("//") else url
+
+
 def parse_duration(raw: object) -> int | None:
     """B 站时长格式为 "5:6" / "12:34" / "1:02:03"，也见过直接给秒数。"""
     if isinstance(raw, (int, float)):
@@ -144,6 +156,8 @@ class VideoCandidate:
     bvid: str
     title: str
     author: str
+    # 封面图，只在卡片上用。打分不看它，所以不参与 VideoInfo.score 那套计算
+    cover: str = ""
     play: int = 0
     like: int = 0
     coin: int = 0
@@ -161,6 +175,7 @@ class VideoCandidate:
             title=self.title,
             url=self.url,
             author=self.author,
+            cover=self.cover,
             play=self.play,
             like=self.like,
             coin=self.coin,
@@ -304,6 +319,7 @@ class BilibiliClient:
                     bvid=bvid,
                     title=title,
                     author=it.get("author", ""),
+                    cover=_normalize_cover(it.get("pic")),
                     play=int(it.get("play") or 0),
                     like=int(it.get("like") or 0),
                     coin=0,
@@ -336,10 +352,15 @@ class BilibiliClient:
                             payload.get("message"),
                         )
                         return
-                    stat = (payload.get("data") or {}).get("stat") or {}
+                    data = payload.get("data") or {}
+                    stat = data.get("stat") or {}
                     c.coin = int(stat.get("coin") or 0)
                     c.like = int(stat.get("like") or c.like)
                     c.play = int(stat.get("view") or c.play)
+                    # 搜索接口偶尔不带 pic，这边有，顺手补上。
+                    # 不额外发请求——这一趟本来就要打，封面空着卡片会缺一块
+                    if not c.cover:
+                        c.cover = _normalize_cover(data.get("pic"))
                 except Exception as exc:
                     logger.debug("取投币异常 %s：%s", c.bvid, exc)
 

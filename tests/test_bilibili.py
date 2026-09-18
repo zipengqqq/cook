@@ -3,12 +3,16 @@
 网络调用（搜索、view 接口）不进单测，在 BilibiliClient 的方法边界打桩。
 """
 
+import asyncio
+
 import pytest
 
 from app.bilibili import (
     COMPILATION_MARKERS,
+    BilibiliClient,
     VideoCandidate,
     _clean_title,
+    _normalize_cover,
     coarse_rank_key,
     composite_scores,
     has_leading_part,
@@ -117,6 +121,67 @@ def test_clean_title_strips_highlight_tag():
 
 def test_clean_title_unescapes_entities():
     assert _clean_title("A&amp;B &quot;引号&quot;") == 'A&B "引号"'
+
+
+# --- 封面图：卡片要用，文字输出不用 ---
+
+
+def test_normalize_cover_makes_protocol_relative_url_absolute():
+    """实测接口给的就是 //i2.hdslb.com/... 这种协议相对地址。
+
+    原样写进 <img src>，浏览器会当成本站的相对路径去请求，图全破且看不出原因。
+    """
+    assert (
+        _normalize_cover("//i2.hdslb.com/bfs/archive/abc.jpg")
+        == "https://i2.hdslb.com/bfs/archive/abc.jpg"
+    )
+
+
+def test_normalize_cover_leaves_absolute_url_alone():
+    assert (
+        _normalize_cover("https://i0.hdslb.com/bfs/archive/abc.jpg")
+        == "https://i0.hdslb.com/bfs/archive/abc.jpg"
+    )
+
+
+@pytest.mark.parametrize("raw", [None, "", "   ", 123, {}, []])
+def test_normalize_cover_handles_junk(raw):
+    """拿不到封面不该抛异常，卡片那边有占位图兜着。"""
+    assert _normalize_cover(raw) == ""
+
+
+def test_candidate_carries_cover_into_video_info():
+    cand = VideoCandidate(bvid="BV1", title="t", author="a", cover="//i0.hdslb.com/x.jpg")
+    assert cand.to_info().cover == "//i0.hdslb.com/x.jpg"
+
+
+# 实测搜「番茄烧豆腐」时返回的一条，字段照抄
+_SEARCH_ITEM = {
+    "type": "video",
+    "bvid": "BV1BL411a7Yq",
+    "title": "番茄烧豆腐，酸甜下饭，十分钟搞定",
+    "pic": "//i2.hdslb.com/bfs/archive/485ac6a6ad6e3e84313878d0e0aa3b1e09bf31b6.jpg",
+    "author": "某某小厨娘",
+    "play": 354093,
+    "like": 8226,
+    "duration": "2:22",
+}
+
+
+def test_search_result_cover_reaches_the_candidate():
+    """pic 以前在 _build_candidates 里是直接丢掉的，卡片需要它。"""
+    client = BilibiliClient()
+    try:
+        cands = client._build_candidates("番茄烧豆腐", [_SEARCH_ITEM])
+    finally:
+        asyncio.run(client._client.aclose())
+
+    assert len(cands) == 1
+    assert (
+        cands[0].cover
+        == "https://i2.hdslb.com/bfs/archive/485ac6a6ad6e3e84313878d0e0aa3b1e09bf31b6.jpg"
+    )
+    assert cands[0].to_info().cover == cands[0].cover
 
 
 # --- 归一化与打分 ---

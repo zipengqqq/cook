@@ -13,14 +13,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 from app.agent import LLMError, recommend_dishes
 from app.bilibili import BilibiliClient, rank_by_popularity
 from app.config import get_settings
-from app.models import Dish, RecommendRequest
+from app.models import Dish, RecommendRequest, RecommendResponse
 from app.summarize import summarize
 
 logging.basicConfig(
@@ -37,10 +38,21 @@ for _noisy in ("httpx", "httpcore", "httpx2", "httpcore2", "openai"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 app = FastAPI(
-    title="今天晚饭吃什么",
+    title="今天吃什么",
     description="给一句「我有什么食材」，换回几道菜，每道菜配一条 B 站做饭视频。",
     version="0.1.0",
 )
+
+
+INDEX_HTML = Path(__file__).resolve().parent / "app" / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> HTMLResponse:
+    """提问页面。和接口同源，所以不需要 CORS 那一套。"""
+    # 每次请求都重新读盘，而不是启动时读一次：改完 HTML 刷新浏览器就能看到，
+    # 不用重启服务。文件十几 KB，这点开销在本地自用场景下可以忽略。
+    return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
 
 
 @app.get("/health")
@@ -48,8 +60,19 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/api/recommend", response_class=PlainTextResponse)
-async def recommend(req: RecommendRequest) -> PlainTextResponse:
+@app.post(
+    "/api/recommend",
+    # 默认给文本。浏览器页面走 Accept: application/json 拿结构化数据去渲染卡片，
+    # curl / /docs / README 里的例子行为一字不变。
+    response_class=PlainTextResponse,
+    responses={
+        200: {
+            "description": "默认 text/plain；请求头带 Accept: application/json 时返回 JSON",
+            "content": {"application/json": {}},
+        }
+    },
+)
+async def recommend(req: RecommendRequest, request: Request) -> Response:
     settings = get_settings()
     started = time.perf_counter()
 
@@ -83,17 +106,25 @@ async def recommend(req: RecommendRequest) -> PlainTextResponse:
     # 这里是跨菜重算一次，不能直接沿用每道菜内部那个分数（各家尺度不一样）。
     result = rank_by_popularity(result)
 
-    # 润色同样走线程池：它是同步阻塞的
-    text = await asyncio.to_thread(summarize, req.query, result)
+    wants_json = "application/json" in request.headers.get("accept", "")
+    if wants_json:
+        # 卡片只要菜名、理由、链接、封面，本来就不需要那段润色过的话。
+        # 跳过 summarize()，每次推荐少调一次模型、少等几秒。
+        payload = RecommendResponse(query=req.query, dishes=[d.to_card() for d in result])
+        response: Response = JSONResponse(payload.model_dump())
+    else:
+        # 润色同样走线程池：它是同步阻塞的
+        response = PlainTextResponse(await asyncio.to_thread(summarize, req.query, result))
 
     # 耗时只进日志，不进返回给用户的文本
     logger.info(
-        "请求完成：%d 道菜，%d 道有视频，总耗时 %.1fs",
+        "请求完成（%s）：%d 道菜，%d 道有视频，总耗时 %.1fs",
+        "JSON" if wants_json else "文本",
         len(result),
         sum(1 for d in result if d.video is not None),
         time.perf_counter() - started,
     )
-    return PlainTextResponse(text)
+    return response
 
 
 if __name__ == "__main__":

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>今天吃什么</title>
+<style>
+  :root {
+    --bg: #faf7f2;
+    --surface: #ffffff;
+    --text: #241c16;
+    --muted: #7d6c5d;
+    --accent: #c2410c;
+    --accent-soft: #fdf0e7;
+    --border: #ebe2d7;
+    --shadow: 0 1px 2px rgba(36, 28, 22, .06), 0 8px 24px -12px rgba(36, 28, 22, .18);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15120e;
+      --surface: #1f1a15;
+      --text: #f3ede5;
+      --muted: #a2937f;
+      --accent: #fb923c;
+      --accent-soft: #2a2018;
+      --border: #322a21;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  /* 这条不能删。浏览器默认的 [hidden] { display: none } 来自 UA 样式表，
+     优先级永远低于作者样式——只要哪个类顺手写了 display（.status 就是
+     display:flex），那个元素上的 hidden 属性就彻底失效，而且不报任何错。 */
+  [hidden] { display: none !important; }
+
+  body {
+    margin: 0;
+    padding: 40px 20px 80px;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: 940px; margin: 0 auto; }
+
+  /* --- 头部 --- */
+
+  .head { margin-bottom: 28px; }
+  .head h1 {
+    margin: 0 0 8px;
+    font-size: 30px;
+    letter-spacing: -.02em;
+  }
+  .head p { margin: 0; color: var(--muted); }
+
+  /* --- 提问区 --- */
+
+  .ask {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+
+  #query {
+    display: block;
+    width: 100%;
+    border: 0;
+    outline: none;
+    resize: vertical;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    min-height: 68px;
+    padding: 4px 2px 12px;
+  }
+  #query::placeholder { color: var(--muted); opacity: .8; }
+
+  .ask-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; }
+  .chip {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 5px 12px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .chip:hover { color: var(--accent); border-color: currentColor; background: var(--accent-soft); }
+
+  .go {
+    border: 0;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    padding: 10px 24px;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
+  }
+  .go:hover:not(:disabled) { opacity: .9; }
+  .go:active:not(:disabled) { transform: translateY(1px); }
+  .go:disabled { opacity: .5; cursor: default; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* --- 状态条 --- */
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 24px 2px 0;
+    color: var(--muted);
+  }
+  .status.error { color: var(--text); }
+  .status .hint { font-size: 14px; }
+
+  .spinner {
+    width: 15px; height: 15px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* --- 结果 --- */
+
+  .results { margin-top: 28px; }
+  .intro { margin: 0 0 16px 2px; color: var(--muted); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(224px, 1fr));
+    gap: 18px;
+  }
+
+  .card {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
+    box-shadow: var(--shadow);
+    transition: transform .16s ease, box-shadow .16s ease, border-color .16s;
+  }
+  a.card:hover {
+    transform: translateY(-3px);
+    border-color: var(--accent);
+    box-shadow: 0 2px 4px rgba(36,28,22,.08), 0 16px 32px -16px rgba(36,28,22,.35);
+  }
+
+  .thumb {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: linear-gradient(135deg, var(--accent-soft), var(--border));
+    overflow: hidden;
+  }
+  .thumb img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  /* 没有封面图时的占位：拿菜名首字撑一下，比一块空白强 */
+  .thumb-blank {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 34px;
+    font-weight: 700;
+    color: var(--accent);
+    opacity: .45;
+  }
+
+  .body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .body h3 { margin: 0; font-size: 16px; line-height: 1.4; }
+  .body p { margin: 0; font-size: 14px; color: var(--muted); }
+
+  .watch {
+    margin-top: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  /* 没搜到视频的菜：不装成能点的样子，虚线边框 + 一句实话 */
+  .card.empty {
+    border-style: dashed;
+    box-shadow: none;
+    background: transparent;
+  }
+  .card.empty .body { padding: 16px 14px; justify-content: center; }
+  .card.empty .none { margin-top: 8px; font-size: 13px; color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="head">
+    <h1>今天吃什么</h1>
+    <p>说说手头有什么食材，或者就想吃点什么。给你几道菜，每道配一条 B 站做饭视频。</p>
+  </header>
+
+  <form class="ask" id="ask">
+    <textarea id="query" rows="3" maxlength="500" autofocus
+      placeholder="比如：我现在有番茄、豆腐、葱，今天吃什么"></textarea>
+    <div class="ask-row">
+      <div class="chips" id="chips">
+        <button type="button" class="chip">我有番茄豆腐葱</button>
+        <button type="button" class="chip">冰箱里只有鸡蛋和土豆</button>
+        <button type="button" class="chip">想清淡点，喝点汤</button>
+      </div>
+      <button type="submit" class="go" id="go">问问看</button>
+    </div>
+  </form>
+
+  <section class="status" id="status" hidden></section>
+
+  <section class="results" id="results" hidden>
+    <p class="intro" id="intro"></p>
+    <div class="grid" id="grid"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var form = document.getElementById('ask');
+  var queryEl = document.getElementById('query');
+  var goBtn = document.getElementById('go');
+  var statusEl = document.getElementById('status');
+  var resultsEl = document.getElementById('results');
+  var introEl = document.getElementById('intro');
+  var gridEl = document.getElementById('grid');
+
+  // 一次推荐要调模型 + 并发去 B 站搜好几道菜，十秒上下是常态。
+  // 不给计时器的话，界面看着像卡死了。
+  var ticker = null;
+
+  function setStatus(text, kind) {
+    statusEl.textContent = '';
+    statusEl.hidden = false;
+    statusEl.className = 'status' + (kind ? ' ' + kind : '');
+    if (kind === 'error') {
+      statusEl.textContent = text;
+      return;
+    }
+    var spinner = document.createElement('span');
+    spinner.className = 'spinner';
+    var label = document.createElement('span');
+    label.textContent = text;
+    var seconds = document.createElement('b');
+    seconds.id = 'secs';
+    label.appendChild(document.createTextNode(' '));
+    label.appendChild(seconds);
+    var hint = document.createElement('span');
+    hint.className = 'hint';
+    hint.textContent = '（要找好几道菜的视频，慢的话十几秒）';
+    statusEl.appendChild(spinner);
+    statusEl.appendChild(label);
+    statusEl.appendChild(hint);
+  }
+
+  function startTicker() {
+    var started = Date.now();
+    var el = document.getElementById('secs');
+    ticker = setInterval(function () {
+      el.textContent = ((Date.now() - started) / 1000).toFixed(1) + 's';
+    }, 100);
+  }
+
+  function stopTicker() {
+    clearInterval(ticker);
+    ticker = null;
+  }
+
+  // 全程用 textContent 和 DOM 属性赋值，不碰 innerHTML：
+  // 菜名和推荐理由是模型生成的，拼字符串就等于给它一个注入点。
+  function buildCard(dish) {
+    var video = dish.video;
+    var card = document.createElement(video ? 'a' : 'div');
+    card.className = 'card' + (video ? '' : ' empty');
+
+    if (video) {
+      card.href = video.url;
+      card.target = '_blank';
+      card.rel = 'noopener noreferrer';
+
+      var thumb = document.createElement('div');
+      thumb.className = 'thumb';
+      var blank = document.createElement('span');
+      blank.className = 'thumb-blank';
+      blank.textContent = dish.name.charAt(0);
+      thumb.appendChild(blank);
+
+      if (video.cover) {
+        var img = document.createElement('img');
+        img.alt = '';                 // 装饰图，菜名就在下面，重复念一遍反而吵
+        img.loading = 'lazy';
+        // B 站图床会看 Referer 防盗链，不带 referer 才稳
+        img.referrerPolicy = 'no-referrer';
+        img.addEventListener('error', function () { img.remove(); });
+        img.src = video.cover;
+        thumb.appendChild(img);
+      }
+      card.appendChild(thumb);
+    }
+
+    var body = document.createElement('div');
+    body.className = 'body';
+
+    var name = document.createElement('h3');
+    name.textContent = dish.name;
+    body.appendChild(name);
+
+    if (dish.reason) {
+      var reason = document.createElement('p');
+      reason.textContent = dish.reason;
+      body.appendChild(reason);
+    }
+
+    var tail = document.createElement('div');
+    tail.className = video ? 'watch' : 'none';
+    tail.textContent = video ? '看视频 →' : '没找到合适的视频';
+    body.appendChild(tail);
+
+    card.appendChild(body);
+    return card;
+  }
+
+  function render(data) {
+    var dishes = data.dishes || [];
+    gridEl.textContent = '';
+
+    if (!dishes.length) {
+      setStatus('这次没想出合适的菜，换个说法再试试。', 'error');
+      return;
+    }
+
+    var withVideo = dishes.filter(function (d) { return d.video; }).length;
+    introEl.textContent = '关于「' + data.query + '」，推荐这 ' + dishes.length + ' 道菜' +
+      (withVideo ? '' : '（这次都没找到合适的视频）') + '：';
+
+    dishes.forEach(function (dish) { gridEl.appendChild(buildCard(dish)); });
+
+    statusEl.hidden = true;
+    resultsEl.hidden = false;
+  }
+
+  function describeError(res) {
+    // FastAPI 的 HTTPException 会给出 {"detail": "..."}，能显示就显示
+    return res.json().then(function (body) {
+      return (body && body.detail) || ('请求失败（HTTP ' + res.status + '）');
+    }).catch(function () {
+      return '请求失败（HTTP ' + res.status + '）';
+    });
+  }
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+
+    var query = queryEl.value.trim();
+    if (!query) {
+      queryEl.focus();
+      return;
+    }
+
+    goBtn.disabled = true;
+    resultsEl.hidden = true;
+    setStatus('正在翻菜谱、找视频…');
+    startTicker();
+
+    fetch('/api/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ query: query })
+    })
+      .then(function (res) {
+        if (!res.ok) { return describeError(res).then(function (m) { throw new Error(m); }); }
+        return res.json();
+      })
+      .then(render)
+      .catch(function (err) {
+        // 后端整个没起来时 fetch 直接 reject，这时候给一句人话，
+        // 别把 "Failed to fetch" 甩给用户
+        var msg = err instanceof TypeError
+          ? '连不上服务，确认一下后端还在跑。'
+          : (err.message || '出了点问题，再试一次。');
+        setStatus(msg, 'error');
+      })
+      .finally(function () {
+        stopTicker();
+        goBtn.disabled = false;
+      });
+  });
+
+  // 填例子不该抢焦点，填完光标放末尾方便接着改
+  document.getElementById('chips').addEventListener('click', function (event) {
+    var chip = event.target.closest('.chip');
+    if (!chip) { return; }
+    queryEl.value = chip.textContent;
+    queryEl.focus();
+    queryEl.setSelectionRange(queryEl.value.length, queryEl.value.length);
+  });
+
+  // 回车直接发，Shift+回车换行
+  queryEl.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+})();
+</script>
+</body>
+</html>
